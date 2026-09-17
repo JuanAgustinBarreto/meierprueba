@@ -1,13 +1,49 @@
 (async function(){
+  // Conexión a Supabase (usando las mismas credenciales del panel)
+  const SUPABASE_URL = "https://ayelftqcowykroiwclfs.supabase.co";
+  const SUPABASE_ANON_KEY = "sb_publishable_Vi4XSoGzkn5Y3pgOkLWpCA_q-vzZ9Uo";
+  
+  let supabaseClient = null;
+  if (window.supabase) {
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
 
-  const response = await fetch("productos.json");
-  const productos = await response.json();
+  let productos = [];
+
+  // Intentamos cargar desde Supabase; si falla, recurrimos a productos.json de respaldo
+  if (supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient.from('productos').select('*').eq('activo', true).order('nombre');
+      if (!error && data) {
+        // Mapeamos al formato que usa la app
+        productos = data.map(p => ({
+          id: p.id,
+          name: p.nombre,
+          category: (p.categoria || 'varios').toLowerCase().trim(),
+          brand: p.marca || '',
+          price: p.precio || 0,
+          image: p.imagen_url || 'assets/logomeier.jpg',
+          stock: p.stock || 0
+        }));
+      }
+    } catch (err) {
+      console.error("Error cargando de Supabase, usando respaldo local", err);
+    }
+  }
+
+  if (productos.length === 0) {
+    try {
+      const response = await fetch("productos.json");
+      productos = await response.json();
+    } catch(e) {
+      productos = [];
+    }
+  }
 
   const D = window.MEIER_DATA;
   D.products = productos;
-  const fmt = n => "$" + n.toLocaleString("es-AR");
-  const $ = s => document.querySelector(s);
-  const $$ = s => document.querySelectorAll(s);
+  const fmt = n => "$" + Number(n).toLocaleString("es-AR");
+  const $ = s => document.querySelector(s);   const $$ = s => document.querySelectorAll(s);
 
   // Year
   $("#year").textContent = new Date().getFullYear();
@@ -48,24 +84,24 @@
   });
 
   // Brand filter
-const brandFilter = $("#brandFilter");
+  const brandFilter = $("#brandFilter");
+  if (brandFilter) {
+    const marcas = [...new Set(
+      D.products
+        .map(p => p.brand || "")
+        .filter(m => m.trim() !== "")
+    )].sort();
 
-if (brandFilter) {
-  const marcas = [...new Set(
-    D.products
-      .map(p => p.brand || "")
-      .filter(m => m.trim() !== "")
-  )].sort();
+    brandFilter.innerHTML += marcas
+      .map(m => `<option value="${m}">${m}</option>`)
+      .join("");
 
-  brandFilter.innerHTML += marcas
-    .map(m => `<option value="${m}">${m}</option>`)
-    .join("");
+    brandFilter.addEventListener("change", e => {
+      activeBrand = e.target.value;
+      render();
+    });
+  }
 
-  brandFilter.addEventListener("change", e => {
-    activeBrand = e.target.value;
-    render();
-  });
-}
   // Search
   let query = "";
   $("#search").addEventListener("input", e => { query = e.target.value.toLowerCase().trim(); render(); });
@@ -75,23 +111,23 @@ if (brandFilter) {
   const emptyEl = $("#empty");
   function render(){
     const list = D.products.filter(p =>
-  (activeCat === "all" || p.category === activeCat) &&
-  (!activeBrand || p.brand === activeBrand) &&
-  (
-    !query ||
-    p.name.toLowerCase().includes(query) ||
-    (p.brand || "").toLowerCase().includes(query)
-  )
-);
+      (activeCat === "all" || p.category === activeCat) &&
+      (!activeBrand || p.brand === activeBrand) &&
+      (
+        !query ||
+        p.name.toLowerCase().includes(query) ||
+        (p.brand || "").toLowerCase().includes(query)
+      )
+    );
     emptyEl.classList.toggle("hidden", list.length > 0);
     productsEl.innerHTML = list.map(p => `
       <article class="card">
-        <div class="card__img"><img src="${p.image}" alt="${p.name}" loading="lazy" onerror="this.style.display='none'"/></div>
+        <div class="card__img"><img src="${p.image}" alt="${p.name}" loading="lazy" onerror="this.src='assets/logomeier.jpg'"/></div>
         <div class="card__body">
           <span class="card__brand">${p.category}</span>
           <h3 class="card__name">${p.name}</h3>
           <div class="card__foot">
-            <span class="card__price">Consultar</span>
+            <span class="card__price">${p.price ? fmt(p.price) : "Consultar"}</span>
             <button class="card__add" data-add="${p.id}" aria-label="Agregar al carrito">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" width="18" height="18"><path d="M12 5v14M5 12h14"/></svg>
             </button>
@@ -103,7 +139,10 @@ if (brandFilter) {
 
   productsEl.addEventListener("click", e => {
     const b = e.target.closest("[data-add]"); if (!b) return;
-    addToCart(parseInt(b.dataset.add, 10));
+    // Soportar tanto IDs numéricos como UUIDs de Supabase
+    const rawId = b.dataset.add;
+    const prodId = !isNaN(rawId) ? parseInt(rawId, 10) : rawId;
+    addToCart(prodId);
     openCart();
   });
 
@@ -117,7 +156,7 @@ if (brandFilter) {
   overlay.addEventListener("click", closeCart);
 
   function addToCart(id, qty=1){
-    const p = D.products.find(x => x.id === id); if (!p) return;
+    const p = D.products.find(x => x.id == id); if (!p) return;
     const cur = cart.get(id);
     cart.set(id, { product:p, qty:(cur?cur.qty:0)+qty });
     drawCart();
@@ -130,12 +169,15 @@ if (brandFilter) {
   $("#clearCart").addEventListener("click", () => { cart.clear(); drawCart(); });
 
   function totals(){
-  let count = 0;
-  cart.forEach(({qty}) => {
-    count += qty;
-  });
-  return { count };
-}
+    let count = 0;
+    let subtotal = 0;
+    cart.forEach(({product:p, qty}) => {
+      count += qty;
+      subtotal += (p.price || 0) * qty;
+    });
+    return { count, subtotal };
+  }
+
   function drawCart(){
     const body = $("#cartBody");
     if (cart.size === 0){
@@ -143,7 +185,7 @@ if (brandFilter) {
     } else {
       body.innerHTML = [...cart.values()].map(({product:p, qty}) => `
         <div class="cart-item">
-          <img src="${p.image}" alt="${p.name}" onerror="this.style.visibility='hidden'"/>
+          <img src="${p.image}" alt="${p.name}" onerror="this.src='assets/logomeier.jpg'"/>
           <div>
             <div class="cart-item__name">${p.name}</div>
             <div class="cart-item__brand">${p.category}</div>
@@ -152,22 +194,30 @@ if (brandFilter) {
             </div>
           </div>
           <div style="text-align:right">
-            <div class="cart-item__price">${qty} unidad(es)</div>
+            <div class="cart-item__price">${p.price ? fmt(p.price * qty) : qty + " un."}</div>
             <button class="cart-item__remove" data-rm="${p.id}">Quitar</button>
           </div>
         </div>`).join("");
     }
-    const { count } = totals();
+    const { count, subtotal } = totals();
 
-$("#subtotal").textContent = count + " productos";
-$("#total").textContent = count + " productos";
-$("#cartCount").textContent = count;
+    $("#subtotal").textContent = fmt(subtotal);
+    $("#total").textContent = fmt(subtotal);
+    $("#cartCount").textContent = count;
   }
+
   $("#cartBody").addEventListener("click", e => {
     const t = e.target;
-    if (t.dataset.inc) addToCart(+t.dataset.inc);
-    else if (t.dataset.dec){ const c = cart.get(+t.dataset.dec); if (c) setQty(+t.dataset.dec, c.qty-1); }
-    else if (t.dataset.rm) setQty(+t.dataset.rm, 0);
+    if (t.dataset.inc) addToCart(isNaN(t.dataset.inc) ? t.dataset.inc : +t.dataset.inc);
+    else if (t.dataset.dec){ 
+      const id = isNaN(t.dataset.dec) ? t.dataset.dec : +t.dataset.dec;
+      const c = cart.get(id); 
+      if (c) setQty(id, c.qty-1); 
+    }
+    else if (t.dataset.rm) {
+      const id = isNaN(t.dataset.rm) ? t.dataset.rm : +t.dataset.rm;
+      setQty(id, 0);
+    }
   });
   drawCart();
 
@@ -181,39 +231,85 @@ $("#cartCount").textContent = count;
   modal.addEventListener("click", e => { if (e.target === modal) modal.classList.remove("open"); });
 
   function renderSummary(){
-  const { count } = totals();
+    const { count, subtotal } = totals();
 
-  $("#summaryList").innerHTML = [...cart.values()]
-    .map(({product:p,qty}) =>
-      `<li><span>${qty} × ${p.name}</span><span>${qty}</span></li>`
-    ).join("");
+    $("#summaryList").innerHTML = [...cart.values()]
+      .map(({product:p,qty}) =>
+        `<li><span>${qty} × ${p.name}</span><span>${p.price ? fmt(p.price * qty) : '-'}</span></li>`
+      ).join("");
 
-  $("#summaryTotal").textContent = count + " productos";
-}
+    $("#summaryTotal").textContent = fmt(subtotal);
+  }
 
-  $("#checkoutForm").addEventListener("submit", e => {
+  $("#checkoutForm").addEventListener("submit", async e => {
     e.preventDefault();
     const f = e.target;
     if (!f.checkValidity()){ f.reportValidity(); return; }
     const data = Object.fromEntries(new FormData(f).entries());
-    const lines = [...cart.values()].map(({product:p,qty}) =>
-  `• ${qty} × ${p.name}`
-).join("\n");
+    const { count, subtotal } = totals();
 
-const { count } = totals();
+    const itemsArray = [...cart.values()].map(({product:p, qty}) => ({
+      producto_id: typeof p.id === 'string' && p.id.length > 10 ? p.id : null,
+      nombre_producto: p.name,
+      cantidad: qty,
+      precio_unitario: p.price || 0,
+      subtotal: (p.price || 0) * qty
+    }));
+
+    const numeroPedido = Math.floor(1000 + Math.random() * 9000);
+
+    // Guardar en Supabase para el panel admin (admin-meier.vercel.app)
+    if (supabaseClient) {
+      try {
+        const { data: pedidoIns, error: errPed } = await supabaseClient
+          .from('pedidos')
+          .insert([{
+            numero: numeroPedido,
+            cliente_nombre: data.nombre,
+            cliente_apellido: data.apellido,
+            cliente_telefono: data.telefono,
+            cliente_direccion: data.direccion,
+            cliente_email: data.email || '',
+            total: subtotal,
+            estado: 'nuevo'
+          }])
+          .select()
+          .single();
+
+        if (!errPed && pedidoIns) {
+          const itemsConPedidoId = itemsArray.map(item => ({
+            ...item,
+            pedido_id: pedidoIns.id
+          }));
+          await supabaseClient.from('pedido_items').insert(itemsConPedidoId);
+        }
+      } catch (errSupabase) {
+        console.error("No se pudo registrar en la base de datos", errSupabase);
+      }
+    }
+
+    const lines = [...cart.values()].map(({product:p,qty}) =>
+      `• ${qty} × ${p.name}`
+    ).join("\n");
+
     const msg =
 `Hola Meier Distribuciones! 👋
-Quiero hacer un pedido:
+Quiero hacer un pedido (#${numeroPedido}):
 
 ${lines}
 
+*Total estimado: ${fmt(subtotal)}*
 *Cantidad total de productos: ${count}*
 
 Datos:
 Nombre: ${data.nombre} ${data.apellido}
 Dirección: ${data.direccion}
 Teléfono: ${data.telefono}${data.email?`\nEmail: ${data.email}`:""}`;
+
     window.open(`https://wa.me/${D.whatsapp}?text=${encodeURIComponent(msg)}`, "_blank");
+    modal.classList.remove("open");
+    cart.clear();
+    drawCart();
   });
 
   // Header scroll effect

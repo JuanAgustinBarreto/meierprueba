@@ -1,5 +1,5 @@
 window.MEIER_DATA = {
-  whatsapp: "5493435423041",
+  whatsapp: "5493435451818",
 
   benefits: [
     { icon: "user", title: "Atención personalizada", desc: "Te asesoramos según tu comercio o necesidad." },
