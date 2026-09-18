@@ -1,5 +1,5 @@
 (async function(){
-  // Conexión a Supabase (usando las mismas credenciales del panel)
+  // Conexión a Supabase
   const SUPABASE_URL = "https://ayelftqcowykroiwclfs.supabase.co";
   const SUPABASE_ANON_KEY = "sb_publishable_Vi4XSoGzkn5Y3pgOkLWpCA_q-vzZ9Uo";
   
@@ -15,7 +15,6 @@
     try {
       const { data, error } = await supabaseClient.from('productos').select('*').eq('activo', true).order('nombre');
       if (!error && data) {
-        // Mapeamos al formato que usa la app
         productos = data.map(p => ({
           id: p.id,
           name: p.nombre,
@@ -139,7 +138,6 @@
 
   productsEl.addEventListener("click", e => {
     const b = e.target.closest("[data-add]"); if (!b) return;
-    // Soportar tanto IDs numéricos como UUIDs de Supabase
     const rawId = b.dataset.add;
     const prodId = !isNaN(rawId) ? parseInt(rawId, 10) : rawId;
     addToCart(prodId);
@@ -248,27 +246,19 @@
     const data = Object.fromEntries(new FormData(f).entries());
     const { count, subtotal } = totals();
 
-    const itemsArray = [...cart.values()].map(({product:p, qty}) => ({
-      producto_id: typeof p.id === 'string' && p.id.length > 10 ? p.id : null,
-      nombre_producto: p.name,
-      cantidad: qty,
-      precio_unitario: p.price || 0,
-      subtotal: (p.price || 0) * qty
-    }));
+    let numeroPedido = null;
 
-    const numeroPedido = Math.floor(1000 + Math.random() * 9000);
-
-    // Guardar en Supabase para el panel admin (admin-meier.vercel.app)
+    // Guardar en Supabase para el panel admin
     if (supabaseClient) {
       try {
+        // Dejamos que Supabase autogenere la columna 'numero' mediante su secuencia (nextval)
         const { data: pedidoIns, error: errPed } = await supabaseClient
           .from('pedidos')
           .insert([{
-            numero: numeroPedido,
-            cliente_nombre: data.nombre,
-            cliente_apellido: data.apellido,
-            cliente_telefono: data.telefono,
-            cliente_direccion: data.direccion,
+            cliente_nombre: data.nombre || '',
+            cliente_apellido: data.apellido || '',
+            cliente_telefono: data.telefono || '',
+            cliente_direccion: data.direccion || '',
             cliente_email: data.email || '',
             total: subtotal,
             estado: 'nuevo'
@@ -276,17 +266,29 @@
           .select()
           .single();
 
-        if (!errPed && pedidoIns) {
-          const itemsConPedidoId = itemsArray.map(item => ({
-            ...item,
-            pedido_id: pedidoIns.id
+        if (errPed) {
+          console.error("Error insertando pedido en Supabase:", errPed);
+        } else if (pedidoIns) {
+          numeroPedido = pedidoIns.numero; // Número oficial asignado por Supabase
+          
+          const itemsConPedidoId = [...cart.values()].map(({product:p, qty}) => ({
+            pedido_id: pedidoIns.id,
+            producto_id: typeof p.id === 'string' && p.id.length > 10 ? p.id : null,
+            nombre_producto: p.name,
+            cantidad: qty,
+            precio_unitario: p.price || 0,
+            subtotal: (p.price || 0) * qty
           }));
-          await supabaseClient.from('pedido_items').insert(itemsConPedidoId);
+
+          const { error: errItems } = await supabaseClient.from('pedido_items').insert(itemsConPedidoId);
+          if (errItems) console.error("Error insertando items:", errItems);
         }
       } catch (errSupabase) {
         console.error("No se pudo registrar en la base de datos", errSupabase);
       }
     }
+
+    const numMostrar = numeroPedido ? `#${numeroPedido}` : '';
 
     const lines = [...cart.values()].map(({product:p,qty}) =>
       `• ${qty} × ${p.name}`
@@ -294,7 +296,7 @@
 
     const msg =
 `Hola Meier Distribuciones! 👋
-Quiero hacer un pedido (#${numeroPedido}):
+Quiero hacer un pedido ${numMostrar}:
 
 ${lines}
 
